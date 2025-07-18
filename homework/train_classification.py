@@ -1,72 +1,117 @@
-import sys
+# File: homework/train_classification.py
+
+import argparse
+from datetime import datetime
 from pathlib import Path
 
-project_root = Path(__file__).parent.resolve()
-sys.path.insert(0, str(project_root))
-
+import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
+import torch.utils.tensorboard as tb
 
-from datasets.classification_dataset import load_data
-from models import Classifier
-from metrics import AccuracyMetric
+from .datasets.classification_dataset import load_data
+from .models import Classifier
+from .metrics import AccuracyMetric
 
-#Hyperparameters
-BATCH_SIZE = 64
-LR = 1e-3
-EPOCHS = 20
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-#Data loaders using provided load_data function
-train_loader = load_data(
-    dataset_path='classification_data',
-    transform_pipeline='aug',
-    return_dataloader=True,
-    batch_size=BATCH_SIZE,
-    shuffle=True
-)
-val_loader = load_data(
-    dataset_path='classification_data',
-    transform_pipeline='default',
-    return_dataloader=True,
-    batch_size=BATCH_SIZE,
-    shuffle=False
-)
+def train(
+    exp_dir: str = "logs",
+    model_name: str = "classifier",
+    num_epoch: int = 20,
+    lr: float = 1e-3,
+    batch_size: int = 64,
+    seed: int = 2024,
+    **kwargs,
+):
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
+        device = torch.device("mps")
+    else:
+        print("CUDA not available, using CPU")
+        device = torch.device("cpu")
 
-model = Classifier().to(DEVICE)
-loss_fn = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=LR)
-metric = AccuracyMetric()
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
-best_acc = 0.0
-for epoch in range(1, EPOCHS+1):
+    log_dir = Path(exp_dir) / f"{model_name}_{datetime.now().strftime('%m%d_%H%M%S')}"
+    logger = tb.SummaryWriter(log_dir)
+
+    model = Classifier(**kwargs).to(device)
     model.train()
-    for imgs, labels in train_loader:
-        imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
-        optimizer.zero_grad()
-        logits = model(imgs)
-        loss = loss_fn(logits, labels)
-        loss.backward()
-        optimizer.step()
 
-    model.eval()
-    metric.reset()
+    train_loader = load_data(
+        "classification_data/train",
+        transform_pipeline="aug",
+        return_dataloader=True,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=2,
+    )
+    val_loader = load_data(
+        "classification_data/val",
+        transform_pipeline="default",
+        return_dataloader=True,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=2,
+    )
 
-    with torch.no_grad():
-        for imgs, labels in val_loader:
-            imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
-            preds = model.predict(imgs)
-            metric.add(preds, labels)
+    loss_fn = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    metric = AccuracyMetric()
 
-    val_acc = metric.value()
-    print(f"Epoch {epoch:02d}: val accuracy = {val_acc:.4f}")
+    global_step = 0
+    for epoch in range(num_epoch):
+        # --- training ---
+        model.train()
+        train_accs = []
+        for imgs, labels in train_loader:
+            imgs, labels = imgs.to(device), labels.to(device)
+            optimizer.zero_grad()
+            logits = model(imgs)
+            loss = loss_fn(logits, labels)
+            loss.backward()
+            optimizer.step()
 
-    if val_acc > best_acc:
-        best_acc = val_acc
-        torch.save(model.state_dict(), 'best_classifier.pth')
-        print(f"New best model (acc={best_acc:.4f}) saved.")
+            preds = torch.argmax(logits, dim=1)
+            train_accs.append((preds == labels).float().mean().item())
 
-    if val_acc >= 0.80:
-        print("Reached target accuracy ≥ 0.80, stopping training.")
-        break
+            logger.add_scalar("train_loss", loss.item(), global_step)
+            global_step += 1
+
+        model.eval()
+        metric.reset()
+        with torch.inference_mode():
+            for imgs, labels in val_loader:
+                imgs, labels = imgs.to(device), labels.to(device)
+                preds = model.predict(imgs)
+                metric.add(preds, labels)
+        
+        val_metrics = metric.compute()
+        val_acc = val_metrics["accuracy"]
+
+        train_epoch_acc = float(np.mean(train_accs))
+        logger.add_scalar("train_accuracy", train_epoch_acc, epoch)
+        logger.add_scalar("val_accuracy", val_acc, epoch)
+
+        if epoch == 0 or epoch == num_epoch - 1 or (epoch + 1) % 10 == 0:
+            print(
+                f"Epoch {epoch+1:02d}/{num_epoch:02d}: "
+                f"train_acc={train_epoch_acc:.4f} val_acc={val_acc:.4f}"
+            )
+
+    torch.save(model.state_dict(), f"{model_name}.pth")
+    torch.save(model.state_dict(), log_dir / f"{model_name}.pth")
+    print(f"Model saved to {model_name}.pth and logs to {log_dir}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--exp_dir", type=str, default="logs")
+    parser.add_argument("--model_name", type=str, default="classifier")
+    parser.add_argument("--num_epoch", type=int, default=20)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--seed", type=int, default=2024)
+    args = parser.parse_args()
+    train(**vars(args))
