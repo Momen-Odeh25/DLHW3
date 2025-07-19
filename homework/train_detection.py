@@ -40,7 +40,7 @@ def train(
 
     train_loader = load_data(
         "drive_data/train",
-        transform_pipeline="aug",
+        transform_pipeline="default",
         return_dataloader=True,
         batch_size=batch_size,
         shuffle=True,
@@ -63,8 +63,10 @@ def train(
     global_step = 0
     for epoch in range(1, num_epoch + 1):
         model.train()
-        for imgs, seg_gt, depth_gt in train_loader:
-            imgs, seg_gt, depth_gt = imgs.to(device), seg_gt.to(device), depth_gt.to(device)
+        for batch in train_loader:
+            imgs     = batch["image"].to(device)
+            seg_gt   = batch["track"].to(device)
+            depth_gt = batch["depth"].to(device)
             optimizer.zero_grad()
             logits, raw_depth = model(imgs)
             loss_seg = seg_loss_fn(logits, seg_gt)
@@ -80,14 +82,17 @@ def train(
         model.eval()
         metric.reset()
         with torch.inference_mode():
-            for imgs, seg_gt, depth_gt in val_loader:
-                imgs, seg_gt, depth_gt = imgs.to(device), seg_gt.to(device), depth_gt.to(device)
+            for batch in val_loader:
+                imgs     = batch["image"].to(device)
+                seg_gt   = batch["track"].to(device)
+                depth_gt = batch["depth"].to(device)
                 seg_pred, depth_pred = model.predict(imgs)
                 metric.add(seg_pred, seg_gt, depth_pred, depth_gt)
+
         det_metrics = metric.compute()
-        miou = det_metrics["mean_iou"]
-        mae = det_metrics["depth_mae"]
-        lane_mae = det_metrics["depth_mae_on_lane"]
+        miou = det_metrics["iou"]
+        mae = det_metrics["abs_depth_error"]
+        lane_mae = det_metrics["tp_depth_error"]
 
         logger.add_scalar("val_mean_iou", miou, epoch)
         logger.add_scalar("val_depth_mae", mae, epoch)
