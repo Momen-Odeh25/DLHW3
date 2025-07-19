@@ -97,43 +97,44 @@ class Detector(torch.nn.Module):
         self.register_buffer("input_mean", torch.as_tensor(INPUT_MEAN))
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD))
 
-        # encoder
+        # Encoder 
         self.down1 = nn.Sequential(
-            nn.Conv2d(in_channels, 16, 3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels,  16, 3, stride=2, padding=1),
+            nn.BatchNorm2d(16), nn.ReLU(inplace=True),
         )
         self.down2 = nn.Sequential(
             nn.Conv2d(16, 32, 3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(32), nn.ReLU(inplace=True),
+        )
+        self.down3 = nn.Sequential(
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),
+            nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+        )
+        self.bottleneck = nn.Sequential(
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128), nn.ReLU(inplace=True),
         )
 
-        # decoder with skip connection
-        self.up1 = nn.Sequential(
-            nn.ConvTranspose2d(32, 16, 3, stride=2, padding=1, output_padding=1),
-            nn.ReLU(inplace=True),
+        # Decoder with skip connections
+        self.up3 = nn.Sequential(
+            nn.ConvTranspose2d(128, 64, 3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(64), nn.ReLU(inplace=True),
         )
         self.up2 = nn.Sequential(
-            nn.ConvTranspose2d(16, 16, 3, stride=2, padding=1, output_padding=1),
-            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(64, 32, 3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(32), nn.ReLU(inplace=True),
+        )
+        self.up1 = nn.Sequential(
+            nn.ConvTranspose2d(32, 16, 3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(16), nn.ReLU(inplace=True),
         )
 
-        # segmentation head
-        self.logits_head = nn.Sequential(
-            nn.Conv2d(16, 32, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 16, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(16, num_classes, 1),
-        )
+        self.skip2_proj = nn.Conv2d(32, 64, 1)
+        self.skip1_proj = nn.Conv2d(16, 32, 1)
 
-        # depth head
-        self.depth_head = nn.Sequential(
-            nn.Conv2d(16, 32, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 16, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(16, 1, 1),
-        )
+        # Output heads
+        self.logits_head = nn.Conv2d(16, num_classes, 1)
+        self.depth_head  = nn.Conv2d(16, 1, 1)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -152,13 +153,20 @@ class Detector(torch.nn.Module):
         z = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
 
         # TODO: replace with actual forward pass
-        d1 = self.down1(z)
-        d2 = self.down2(d1)
-        u1 = self.up1(d2) + d1
-        u2 = self.up2(u1)
-        logits    = self.logits_head(u2)
-        raw_depth = self.depth_head(u2).squeeze(1)
+        d1 = self.down1(z)         # (B,16,48,64)
+        d2 = self.down2(d1)        # (B,32,24,32)
+        d3 = self.down3(d2)        # (B,64,12,16)
+        b  = self.bottleneck(d3)   # (B,128,12,16)
+
+        u3 = self.up3(b) + self.skip2_proj(d2)
+        u2 = self.up2(u3) + self.skip1_proj(d1)
+        u1 = self.up1(u2)
+
+        logits    = self.logits_head(u1)         # (B,3,96,128)
+        raw_depth = self.depth_head(u1).squeeze(1)  # (B,96,128)
+
         return logits, raw_depth
+
 
     def predict(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """

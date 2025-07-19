@@ -62,7 +62,6 @@ def train(
 
     global_step = 0
     for epoch in range(num_epoch):
-        # --- training ---
         model.train()
         train_accs = []
         for imgs, labels in train_loader:
@@ -100,8 +99,8 @@ def train(
                 f"train_acc={train_epoch_acc:.4f} val_acc={val_acc:.4f}"
             )
 
-    torch.save(model.state_dict(), f"{model_name}.pth")
-    torch.save(model.state_dict(), log_dir / f"{model_name}.pth")
+    torch.save(model.state_dict(), f"{model_name}.th")
+    torch.save(model.state_dict(), log_dir / f"{model_name}.th")
     print(f"Model saved to {model_name}.pth and logs to {log_dir}")
 
 
