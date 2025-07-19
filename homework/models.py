@@ -97,19 +97,43 @@ class Detector(torch.nn.Module):
         self.register_buffer("input_mean", torch.as_tensor(INPUT_MEAN))
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD))
 
-        self.net = nn.Sequential(
-            nn.Conv2d(in_channels, 16, kernel_size=3, stride=2, padding=1),
+        # encoder
+        self.down1 = nn.Sequential(
+            nn.Conv2d(in_channels, 16, 3, stride=2, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(16, 16, kernel_size=3, stride=2, padding=1, output_padding=1),
+        )
+        self.down2 = nn.Sequential(
+            nn.Conv2d(16, 32, 3, stride=2, padding=1),
             nn.ReLU(inplace=True),
         )
 
-        self.logits_head = nn.Conv2d(16, num_classes, kernel_size=1)
-        self.depth_head  = nn.Conv2d(16, 1, kernel_size=1)
+        # decoder with skip connection
+        self.up1 = nn.Sequential(
+            nn.ConvTranspose2d(32, 16, 3, stride=2, padding=1, output_padding=1),
+            nn.ReLU(inplace=True),
+        )
+        self.up2 = nn.Sequential(
+            nn.ConvTranspose2d(16, 16, 3, stride=2, padding=1, output_padding=1),
+            nn.ReLU(inplace=True),
+        )
+
+        # segmentation head
+        self.logits_head = nn.Sequential(
+            nn.Conv2d(16, 32, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 16, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(16, num_classes, 1),
+        )
+
+        # depth head
+        self.depth_head = nn.Sequential(
+            nn.Conv2d(16, 32, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 16, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(16, 1, 1),
+        )
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -128,11 +152,12 @@ class Detector(torch.nn.Module):
         z = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
 
         # TODO: replace with actual forward pass
-        z = self.net(z)
-        logits = self.logits_head(z)
-        raw_depth = self.depth_head(z).squeeze(1)
-        return logits, raw_depth
-
+        d1 = self.down1(z)
+        d2 = self.down2(d1)
+        u1 = self.up1(d2) + d1
+        u2 = self.up2(u1)
+        logits    = self.logits_head(u2)
+        raw_depth = self.depth_head(u2).squeeze(1)
         return logits, raw_depth
 
     def predict(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

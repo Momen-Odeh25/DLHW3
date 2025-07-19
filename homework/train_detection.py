@@ -12,6 +12,7 @@ from .datasets.road_dataset import load_data
 from .models import Detector
 from .metrics import DetectionMetric
 
+
 def train(
     exp_dir: str = "logs_det",
     model_name: str = "detector",
@@ -26,7 +27,6 @@ def train(
     elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
         device = torch.device("mps")
     else:
-        print("CUDA not available, using CPU")
         device = torch.device("cpu")
 
     torch.manual_seed(seed)
@@ -55,10 +55,10 @@ def train(
         num_workers=2,
     )
 
-    seg_loss_fn = nn.CrossEntropyLoss()
+    seg_loss_fn   = nn.CrossEntropyLoss()
     depth_loss_fn = nn.L1Loss()
-    metric = DetectionMetric()
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    metric        = DetectionMetric()
+    optimizer     = optim.Adam(model.parameters(), lr=lr)
 
     global_step = 0
     for epoch in range(1, num_epoch + 1):
@@ -67,15 +67,16 @@ def train(
             imgs     = batch["image"].to(device)
             seg_gt   = batch["track"].to(device)
             depth_gt = batch["depth"].to(device)
+
             optimizer.zero_grad()
             logits, raw_depth = model(imgs)
-            loss_seg = seg_loss_fn(logits, seg_gt)
+            loss_seg   = seg_loss_fn(logits, seg_gt)
             loss_depth = depth_loss_fn(raw_depth, depth_gt)
-            loss = loss_seg + loss_depth
+            loss       = loss_seg + loss_depth
             loss.backward()
             optimizer.step()
 
-            logger.add_scalar("train_seg_loss", loss_seg.item(), global_step)
+            logger.add_scalar("train_seg_loss",   loss_seg.item(),   global_step)
             logger.add_scalar("train_depth_loss", loss_depth.item(), global_step)
             global_step += 1
 
@@ -86,24 +87,30 @@ def train(
                 imgs     = batch["image"].to(device)
                 seg_gt   = batch["track"].to(device)
                 depth_gt = batch["depth"].to(device)
+
                 seg_pred, depth_pred = model.predict(imgs)
                 metric.add(seg_pred, seg_gt, depth_pred, depth_gt)
 
         det_metrics = metric.compute()
-        miou = det_metrics["iou"]
-        mae = det_metrics["abs_depth_error"]
-        lane_mae = det_metrics["tp_depth_error"]
+        miou    = det_metrics["iou"]
+        mae     = det_metrics["abs_depth_error"]
+        lane_mae= det_metrics["tp_depth_error"]
 
-        logger.add_scalar("val_mean_iou", miou, epoch)
-        logger.add_scalar("val_depth_mae", mae, epoch)
-        logger.add_scalar("val_depth_mae_on_lane", lane_mae, epoch)
+        logger.add_scalar("val_seg_iou",         miou,     epoch)
+        logger.add_scalar("val_depth_mae",       mae,      epoch)
+        logger.add_scalar("val_lane_depth_mae",  lane_mae, epoch)
 
-        print(f"Epoch {epoch:02d}/{num_epoch:02d}: "
-              f"mean_iou={miou:.4f} depth_mae={mae:.4f} lane_mae={lane_mae:.4f}")
+        print(
+            f"Epoch {epoch:02d}/{num_epoch:02d}: "
+            f"mean_iou={miou:.4f} "
+            f"depth_mae={mae:.4f} "
+            f"lane_mae={lane_mae:.4f}"
+        )
 
     torch.save(model.state_dict(), f"{model_name}.pth")
     torch.save(model.state_dict(), log_dir / f"{model_name}.pth")
     print(f"Model saved to {model_name}.pth and checkpoint to {log_dir}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
